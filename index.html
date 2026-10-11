@@ -55,6 +55,8 @@ const $ = id => document.getElementById(id);
 const video=$("video"), canvas=$("overlay"), ctx=canvas.getContext("2d");
 let stream=null, landmarker=null, raf=0, running=false, lastVideoTime=-1;
 let closedSince=null, alertActive=false, testMode=false, alarmTimer=null, audioCtx=null, currentLocation=null, headBase=null, lastHeadNod=0;
+// After acknowledgement, suppress repeat alerts until the camera sees the eyes open again.
+let alertAcknowledgedUntilOpen=false;
 const CLOSE_THRESHOLD=0.20, ALERT_MS=4000;
 
 function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),4500)}
@@ -94,13 +96,31 @@ function alarmBeep(){
 async function startAlarm(){
   if(alarmTimer)return;
   const ready=await unlockAlarmAudio();
-  if(!ready){toast("Alarm audio is blocked. Tap Test Drowsiness Alert, check media volume, then retry.");return}
-  alarmBeep(); alarmTimer=setInterval(alarmBeep,550);
+  if(!ready){toast("Alarm audio is blocked by the browser. Tap Test Drowsiness Alert once to enable sound, then check media volume.");return}
+  // Recheck after the asynchronous audio unlock so we never create duplicate alarm loops.
+  if(alarmTimer)return;
+  alarmBeep();
+  alarmTimer=setInterval(()=>{if(alertActive)alarmBeep();else stopAlarm()},550);
 }
 function stopAlarm(){if(alarmTimer){clearInterval(alarmTimer);alarmTimer=null}}
-function triggerAlert(demo=false){if(alertActive)return;alertActive=true;testMode=demo;$("alertBox").classList.add("show");setRisk("CRITICAL");startAlarm();$("updatedLabel").textContent=demo?"Demo alert active":"Possible drowsiness detected"}
-function clearAlert(){alertActive=false;testMode=false;$("alertBox").classList.remove("show");stopAlarm();if(running)setRisk("NORMAL");$("updatedLabel").textContent="Monitoring active"}
-$("ackBtn").addEventListener("click",()=>{clearAlert();closedSince=null;$("eyeDuration").textContent="0.0 s";if(running)setRisk("NORMAL")});
+function triggerAlert(demo=false){
+  if(alertActive || (!demo && alertAcknowledgedUntilOpen))return;
+  alertActive=true;testMode=demo;
+  $("alertBox").classList.add("show");setRisk("CRITICAL");
+  // The alarm starts from the detection event; it does not wait for a button press.
+  void startAlarm();
+  $("updatedLabel").textContent=demo?"Demo alert active":"Possible drowsiness detected";
+}
+function clearAlert(){
+  alertActive=false;testMode=false;$("alertBox").classList.remove("show");stopAlarm();
+  if(running)setRisk("NORMAL");$("updatedLabel").textContent=running?"Monitoring active":"Monitoring stopped";
+}
+$("ackBtn").addEventListener("click",()=>{
+  // Acknowledging a real alert silences it until the eyes open again.
+  if(!testMode)alertAcknowledgedUntilOpen=true;
+  clearAlert();closedSince=null;$("eyeDuration").textContent="0.0 s";
+  if(running)setRisk("NORMAL");
+});
 
 async function loadModel(){
  if(landmarker)return landmarker;
@@ -144,14 +164,21 @@ function loop(){
     if(eyesClosed){
       if(closedSince===null)closedSince=performance.now();
       const secs=(performance.now()-closedSince)/1000;$("eyeDuration").textContent=secs.toFixed(1)+" s";
-      if(secs>=2)setRisk("WARNING");
-      if(secs>=ALERT_MS)triggerAlert(false);
+      if(!alertActive && !alertAcknowledgedUntilOpen){
+        if(secs>=2)setRisk("WARNING");
+        if(secs>=ALERT_MS)triggerAlert(false);
+      }
     }else{
-      closedSince=null;$("eyeDuration").textContent="0.0 s";
+      closedSince=null;
+      // Eyes reopened: permit a new alert for the next genuine closure.
+      alertAcknowledgedUntilOpen=false;
+      $("eyeDuration").textContent="0.0 s";
       if(!alertActive)setRisk("NORMAL");
     }
     $("updatedLabel").textContent="Live • "+new Date().toLocaleTimeString();
    }else{
+    // Do not accumulate closure time while the face/eyes cannot be measured.
+    closedSince=null;
     $("faceStatus").textContent="Not detected";$("eyeStatus").textContent="Unknown";$("eyeDuration").textContent="—";
     if(!alertActive)setRisk("WARNING");
    }
