@@ -57,7 +57,9 @@ let stream=null, landmarker=null, raf=0, running=false, lastVideoTime=-1;
 let closedSince=null, alertActive=false, testMode=false, alarmTimer=null, audioCtx=null, currentLocation=null, headBase=null, lastHeadNod=0;
 // After acknowledgement, suppress repeat alerts until the camera sees the eyes open again.
 let alertAcknowledgedUntilOpen=false;
-const CLOSE_THRESHOLD=0.20, ALERT_MS=4000;
+const CLOSE_THRESHOLD = 0.20;
+const WARNING_SECONDS = 2;
+const ALERT_SECONDS = 4;
 
 function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),4500)}
 function setRisk(level){const el=$("risk");el.textContent=level;el.className="value "+(level==="CRITICAL"?"critical":level==="WARNING"?"warning":"normal")}
@@ -93,23 +95,49 @@ function alarmBeep(){
     });
   }catch(e){console.warn("Alarm sound unavailable",e)}
 }
-async function startAlarm(){
-  if(alarmTimer)return;
-  const ready=await unlockAlarmAudio();
-  if(!ready){toast("Alarm audio is blocked by the browser. Tap Test Drowsiness Alert once to enable sound, then check media volume.");return}
-  // Recheck after the asynchronous audio unlock so we never create duplicate alarm loops.
-  if(alarmTimer)return;
+async function startAlarm() {
+  if (alarmTimer) return;
+
+  const ready = await unlockAlarmAudio();
+  if (!ready) {
+    // The visual alert remains active even if browser audio is blocked.
+    toast("Drowsiness alert is active, but browser audio is blocked. Enable site sound/media volume and try the test button.");
+    return;
+  }
+
+  // Recheck after awaiting audio unlock to avoid duplicate alarm loops.
+  if (alarmTimer || !alertActive) return;
+
   alarmBeep();
-  alarmTimer=setInterval(()=>{if(alertActive)alarmBeep();else stopAlarm()},550);
+  alarmTimer = setInterval(() => {
+    if (!alertActive) {
+      stopAlarm();
+      return;
+    }
+
+    // Browsers may suspend audio after the page has been backgrounded.
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().then(() => alarmBeep()).catch(() => {});
+    } else {
+      alarmBeep();
+    }
+  }, 550);
 }
 function stopAlarm(){if(alarmTimer){clearInterval(alarmTimer);alarmTimer=null}}
-function triggerAlert(demo=false){
-  if(alertActive || (!demo && alertAcknowledgedUntilOpen))return;
-  alertActive=true;testMode=demo;
-  $("alertBox").classList.add("show");setRisk("CRITICAL");
-  // The alarm starts from the detection event; it does not wait for a button press.
+function triggerAlert(demo = false) {
+  if (alertActive || (!demo && alertAcknowledgedUntilOpen)) return;
+
+  // Show the alert immediately; audio startup must not delay the visual warning.
+  alertActive = true;
+  testMode = demo;
+  $("alertBox").classList.add("show");
+  setRisk("CRITICAL");
+  $("updatedLabel").textContent = demo
+    ? "Demo alert active"
+    : "Possible drowsiness detected";
+
+  // Start the repeating beep automatically.
   void startAlarm();
-  $("updatedLabel").textContent=demo?"Demo alert active":"Possible drowsiness detected";
 }
 function clearAlert(){
   alertActive=false;testMode=false;$("alertBox").classList.remove("show");stopAlarm();
@@ -161,20 +189,26 @@ function loop(){
     const eyesClosed=avg<CLOSE_THRESHOLD;
     $("eyeStatus").textContent=eyesClosed?"Eyes Closed":"Normal";
     $("eyeStatus").className="value "+(eyesClosed?"warning":"normal");
-    if(eyesClosed){
-      if(closedSince===null)closedSince=performance.now();
-      const secs=(performance.now()-closedSince)/1000;$("eyeDuration").textContent=secs.toFixed(1)+" s";
-      if(!alertActive && !alertAcknowledgedUntilOpen){
-        if(secs>=2)setRisk("WARNING");
-        if((performance.now()-closedSince)>=ALERT_MS)triggerAlert(false);
-      }
-    }else{
-      closedSince=null;
-      // Eyes reopened: permit a new alert for the next genuine closure.
-      alertAcknowledgedUntilOpen=false;
-      $("eyeDuration").textContent="0.0 s";
-      if(!alertActive)setRisk("NORMAL");
-    }
+    if (eyesClosed) {
+       if (closedSince === null) closedSince = performance.now();
+
+       // Use one duration value for the dashboard and automatic alert threshold.
+       const closedSeconds = (performance.now() - closedSince) / 1000;
+       $("eyeDuration").textContent = closedSeconds.toFixed(1) + " s";
+
+       if (!alertActive && !alertAcknowledgedUntilOpen) {
+         if (closedSeconds >= WARNING_SECONDS) setRisk("WARNING");
+
+         // Display the alert and start the beep automatically after 4 seconds.
+         if (closedSeconds >= ALERT_SECONDS) triggerAlert(false);
+       }
+     } else {
+       closedSince = null;
+       // Eyes reopened: allow a new alert for a later continuous closure.
+       alertAcknowledgedUntilOpen = false;
+       $("eyeDuration").textContent = "0.0 s";
+       if (!alertActive) setRisk("NORMAL");
+     }
     $("updatedLabel").textContent="Live • "+new Date().toLocaleTimeString();
    }else{
     // Do not accumulate closure time while the face/eyes cannot be measured.
@@ -211,7 +245,15 @@ $("sosBtn").addEventListener("click",async()=>{
   else{await navigator.clipboard.writeText(message);toast("SOS message copied. You can paste it into SMS or another messaging app.")}
  }catch(e){if(e.name!=="AbortError")toast("Sharing was unavailable. Copy the SOS details manually: "+message)}
 });
-window.addEventListener("pagehide",()=>{stopMonitoring();stopAlarm()});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && alertActive && audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().then(() => alarmBeep()).catch(() => {});
+  }
+});
+window.addEventListener("pagehide", () => {
+  stopMonitoring();
+  stopAlarm();
+});
 </script>
 </body>
 </html>
