@@ -55,7 +55,7 @@ const $ = id => document.getElementById(id);
 const video=$("video"), canvas=$("overlay"), ctx=canvas.getContext("2d");
 let stream=null, landmarker=null, raf=0, running=false, lastVideoTime=-1;
 let closedSince=null, alertActive=false, testMode=false, alarmTimer=null, audioCtx=null, currentLocation=null, headBase=null, lastHeadNod=0;
-const CLOSE_THRESHOLD=0.20, ALERT_MS=3000;
+const CLOSE_THRESHOLD=0.20, ALERT_MS=4000;
 
 function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),4500)}
 function setRisk(level){const el=$("risk");el.textContent=level;el.className="value "+(level==="CRITICAL"?"critical":level==="WARNING"?"warning":"normal")}
