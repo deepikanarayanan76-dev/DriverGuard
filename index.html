@@ -54,8 +54,8 @@ import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
 const $ = id => document.getElementById(id);
 const video=$("video"), canvas=$("overlay"), ctx=canvas.getContext("2d");
 let stream=null, landmarker=null, raf=0, running=false, lastVideoTime=-1;
-let closedSince=null, alertActive=false, testMode=false, alarmTimer=null, audioCtx=null, currentLocation=null, headBase=null, lastHeadNod=0, alertAcknowledgedUntilEyesOpen=false;
-const CLOSE_THRESHOLD=0.23, ALERT_MS=4000;
+let closedSince=null, alertActive=false, testMode=false, alarmTimer=null, audioCtx=null, currentLocation=null, headBase=null, lastHeadNod=0;
+const CLOSE_THRESHOLD=0.20, ALERT_MS=4000;
 
 function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),4500)}
 function setRisk(level){const el=$("risk");el.textContent=level;el.className="value "+(level==="CRITICAL"?"critical":level==="WARNING"?"warning":"normal")}
@@ -63,13 +63,13 @@ function setCamera(on){$("cameraStatus").textContent=on?"ON":"OFF";$("camChip").
 function setMonitor(on){$("monitorStatus").textContent=on?"ON":"OFF";$("monitorPill").textContent=on?"MONITORING":"MONITOR OFF";$("monitorPill").classList.toggle("live",on);$("startBtn").disabled=on;$("stopBtn").disabled=!on}
 function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
 function ear(p, ids){const [a,b,c,d,e,f]=ids.map(i=>p[i]);return (distance(b,f)+distance(c,e))/(2*distance(a,d))}
-// Prepare audio from a user tap so mobile Chrome is more likely to allow playback.
+// Unlock audio immediately inside a real tap; mobile browsers often block delayed audio.
 async function unlockAlarmAudio(){
   try{
     const AudioEngine=window.AudioContext||window.webkitAudioContext;
     if(!AudioEngine){toast("This browser does not support alarm audio. Try Chrome.");return false}
     if(!audioCtx) audioCtx=new AudioEngine();
-    if(audioCtx.state!=="running") await audioCtx.resume();
+    if(audioCtx.state==="suspended") await audioCtx.resume();
     return audioCtx.state==="running";
   }catch(e){console.warn("Could not unlock audio",e);return false}
 }
@@ -77,43 +77,31 @@ function alarmBeep(){
   try{
     if(!audioCtx || audioCtx.state!=="running") return;
     const now=audioCtx.currentTime;
-    [950,1250,950].forEach((frequency,i)=>{
+    // Two loud alternating tones; this pattern repeats until the alert is acknowledged.
+    [880,1175].forEach((frequency,i)=>{
       const osc=audioCtx.createOscillator(), gain=audioCtx.createGain();
-      const start=now+i*0.18, end=start+0.14;
-      osc.type="sawtooth"; osc.frequency.setValueAtTime(frequency,start);
+      const start=now+i*0.22, end=start+0.17;
+      osc.type="square"; osc.frequency.setValueAtTime(frequency,start);
       gain.gain.setValueAtTime(0.0001,start);
-      gain.gain.exponentialRampToValueAtTime(0.32,start+0.02);
-      gain.gain.setValueAtTime(0.32,end-0.02);
+      gain.gain.exponentialRampToValueAtTime(0.65,start+0.025);
+      gain.gain.setValueAtTime(0.65,end-0.025);
       gain.gain.exponentialRampToValueAtTime(0.0001,end);
       osc.connect(gain); gain.connect(audioCtx.destination);
       osc.start(start); osc.stop(end+0.01);
     });
   }catch(e){console.warn("Alarm sound unavailable",e)}
 }
-function startAlarm(){
+async function startAlarm(){
   if(alarmTimer)return;
-  if(!audioCtx || audioCtx.state!=="running"){
-    toast("Tap Test Drowsiness Alert once to enable sound, then start monitoring again.");
-    return;
-  }
-  alarmBeep();
-  alarmTimer=setInterval(alarmBeep,650);
+  const ready=await unlockAlarmAudio();
+  if(!ready){toast("Alarm audio is blocked. Tap Test Drowsiness Alert, check media volume, then retry.");return}
+  alarmBeep(); alarmTimer=setInterval(alarmBeep,550);
 }
 function stopAlarm(){if(alarmTimer){clearInterval(alarmTimer);alarmTimer=null}}
-function triggerAlert(demo=false){
-  if(alertActive || (!demo && alertAcknowledgedUntilEyesOpen))return;
-  alertActive=true;testMode=demo;
-  $("alertBox").classList.add("show");setRisk("CRITICAL");startAlarm();
-  $("updatedLabel").textContent=demo?"Demo alert active":"Possible drowsiness detected";
-}
-function clearAlert(){
-  alertActive=false;testMode=false;$("alertBox").classList.remove("show");stopAlarm();
-  if(running)setRisk("NORMAL");$("updatedLabel").textContent=running?"Monitoring active":"Monitoring stopped";
-}
-$("ackBtn").addEventListener("click",()=>{
-  alertAcknowledgedUntilEyesOpen=true;clearAlert();closedSince=null;
-  $("eyeDuration").textContent="0.0 s";if(running)setRisk("NORMAL");
-});
+function triggerAlert(demo=false){if(alertActive)return;alertActive=true;testMode=demo;$("alertBox").classList.add("show");setRisk("CRITICAL");startAlarm();$("updatedLabel").textContent=demo?"Demo alert active":"Possible drowsiness detected"}
+function clearAlert(){alertActive=false;testMode=false;$("alertBox").classList.remove("show");stopAlarm();if(running)setRisk("NORMAL");$("updatedLabel").textContent="Monitoring active"}
+$("ackBtn").addEventListener("click",()=>{clearAlert();closedSince=null;$("eyeDuration").textContent="0.0 s";if(running)setRisk("NORMAL")});
+
 async function loadModel(){
  if(landmarker)return landmarker;
  $("updatedLabel").textContent="Loading face detection model…";
@@ -131,7 +119,7 @@ async function startMonitoring(){
   stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}});
   video.srcObject=stream;await video.play();setCamera(true);
   await loadModel();
-  running=true;alertAcknowledgedUntilEyesOpen=false;setMonitor(true);$("faceStatus").textContent="Searching…";$("updatedLabel").textContent="Monitoring active";
+  running=true;setMonitor(true);$("faceStatus").textContent="Searching…";$("updatedLabel").textContent="Monitoring active";
   canvas.width=video.videoWidth||640;canvas.height=video.videoHeight||480;
   loop();
  }catch(e){console.error(e);stopMonitoring();let msg=e.name==="NotAllowedError"?"Camera permission denied. Allow camera access in Chrome site settings.":e.name==="NotFoundError"?"No front camera was found on this device.":"Could not start camera/model. Check internet, permissions and HTTPS, then retry.";toast(msg);$("startBtn").disabled=false;$("updatedLabel").textContent="Camera/model unavailable"}
@@ -157,9 +145,9 @@ function loop(){
       if(closedSince===null)closedSince=performance.now();
       const secs=(performance.now()-closedSince)/1000;$("eyeDuration").textContent=secs.toFixed(1)+" s";
       if(secs>=2)setRisk("WARNING");
-      if(secs>=ALERT_MS && !alertAcknowledgedUntilEyesOpen)triggerAlert(false);
+      if(secs>=ALERT_MS)triggerAlert(false);
     }else{
-      alertAcknowledgedUntilEyesOpen=false;closedSince=null;$("eyeDuration").textContent="0.0 s";
+      closedSince=null;$("eyeDuration").textContent="0.0 s";
       if(!alertActive)setRisk("NORMAL");
     }
     $("updatedLabel").textContent="Live • "+new Date().toLocaleTimeString();
@@ -180,7 +168,7 @@ function stopMonitoring(){
 }
 $("startBtn").addEventListener("click",startMonitoring);
 $("stopBtn").addEventListener("click",stopMonitoring);
-$("testBtn").addEventListener("click",async()=>{const ready=await unlockAlarmAudio();if(!ready){toast("Could not enable alarm sound. Check media volume and Chrome sound settings.");return}triggerAlert(true);if(!alarmTimer)startAlarm();toast("Demo mode: simulated alert. If you hear nothing, raise media volume and allow sound in Chrome. Press Acknowledge alert to stop the alarm.")});
+$("testBtn").addEventListener("click",async()=>{await unlockAlarmAudio();triggerAlert(true);if(!alarmTimer)await startAlarm();toast("Demo mode: simulated alert. If you hear nothing, raise media volume and allow sound in Chrome. Press Acknowledge alert to stop the alarm.")});
 $("saveProfile").addEventListener("click",()=>{const profile={name:$("driverName").value.trim(),vehicle:$("vehicleNumber").value.trim(),phone:$("emergencyPhone").value.trim()};try{localStorage.setItem("driverguard-profile",JSON.stringify(profile));toast("Profile saved on this device.")}catch(e){toast("Could not save profile in this browser.")}});
 try{const saved=JSON.parse(localStorage.getItem("driverguard-profile")||"{}");$("driverName").value=saved.name||"";$("vehicleNumber").value=saved.vehicle||"";$("emergencyPhone").value=saved.phone||""}catch(e){}
 function updateLocation(pos){currentLocation={lat:pos.coords.latitude,lon:pos.coords.longitude};$("gpsStatus").textContent="ON";$("gpsStatus").className="value normal";$("gpsCoords").textContent=`Latitude: ${currentLocation.lat.toFixed(6)} · Longitude: ${currentLocation.lon.toFixed(6)}`}
