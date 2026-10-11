@@ -166,7 +166,7 @@ function loop(){
       const secs=(performance.now()-closedSince)/1000;$("eyeDuration").textContent=secs.toFixed(1)+" s";
       if(!alertActive && !alertAcknowledgedUntilOpen){
         if(secs>=2)setRisk("WARNING");
-        if(secs>=ALERT_MS)triggerAlert(false);
+        if((performance.now()-closedSince)>=ALERT_MS)triggerAlert(false);
       }
     }else{
       closedSince=null;
